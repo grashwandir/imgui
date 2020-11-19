@@ -1,4 +1,4 @@
-// dear imgui, v1.79
+// dear imgui, v1.80 WIP
 // (widgets code)
 
 /*
@@ -408,6 +408,7 @@ void ImGui::BulletTextV(const char* fmt, va_list args)
 // - Image()
 // - ImageButton()
 // - Checkbox()
+// - CheckboxFlagsT() [Internal]
 // - CheckboxFlags()
 // - RadioButton()
 // - ProgressBar()
@@ -1082,6 +1083,7 @@ bool ImGui::Checkbox(const char* label, bool* v)
     if (mixed_value)
     {
         // Undocumented tristate/mixed/indeterminate checkbox (#2644)
+        // This may seem awkwardly designed because the aim is to make ImGuiItemFlags_MixedValue supported by all widgets (not just checkbox)
         ImVec2 pad(ImMax(1.0f, IM_FLOOR(square_sz / 3.6f)), ImMax(1.0f, IM_FLOOR(square_sz / 3.6f)));
         window->DrawList->AddRectFilled(check_bb.Min + pad, check_bb.Max - pad, check_col, style.FrameRounding);
     }
@@ -1100,33 +1102,43 @@ bool ImGui::Checkbox(const char* label, bool* v)
     return pressed;
 }
 
-bool ImGui::CheckboxFlags(const char* label, unsigned int* flags, unsigned int flags_value)
+template<typename T>
+bool ImGui::CheckboxFlagsT(const char* label, T* flags, T flags_value)
 {
-    bool v = ((*flags & flags_value) == flags_value);
+    bool all_on = (*flags & flags_value) == flags_value;
+    bool any_on = (*flags & flags_value) != 0;
     bool pressed;
-    if (v == false && (*flags & flags_value) != 0)
+    if (!all_on && any_on)
     {
-        // Mixed value (FIXME: find a way to expose neatly to Checkbox?)
         ImGuiWindow* window = GetCurrentWindow();
-        const ImGuiItemFlags backup_item_flags = window->DC.ItemFlags;
+        ImGuiItemFlags backup_item_flags = window->DC.ItemFlags;
         window->DC.ItemFlags |= ImGuiItemFlags_MixedValue;
-        pressed = Checkbox(label, &v);
+        pressed = Checkbox(label, &all_on);
         window->DC.ItemFlags = backup_item_flags;
     }
     else
     {
-        // Regular checkbox
-        pressed = Checkbox(label, &v);
+        pressed = Checkbox(label, &all_on);
+
     }
     if (pressed)
     {
-        if (v)
+        if (all_on)
             *flags |= flags_value;
         else
             *flags &= ~flags_value;
     }
-
     return pressed;
+}
+
+bool ImGui::CheckboxFlags(const char* label, int* flags, int flags_value)
+{
+    return CheckboxFlagsT(label, flags, flags_value);
+}
+
+bool ImGui::CheckboxFlags(const char* label, unsigned int* flags, unsigned int flags_value)
+{
+    return CheckboxFlagsT(label, flags, flags_value);
 }
 
 bool ImGui::RadioButton(const char* label, bool active)
@@ -1341,7 +1353,9 @@ void ImGui::SeparatorEx(ImGuiSeparatorFlags flags)
         // Horizontal Separator
         float x1 = window->Pos.x;
         float x2 = window->Pos.x + window->Size.x;
-        if (!window->DC.GroupStack.empty())
+
+        // FIXME-WORKRECT: old hack (#205) until we decide of consistent behavior with WorkRect/Indent and Separator
+        if (g.GroupStack.Size > 0 && g.GroupStack.back().WindowID == window->ID)
             x1 += window->DC.Indent.x;
 
         ImGuiColumns* columns = (flags & ImGuiSeparatorFlags_SpanAllColumns) ? window->DC.CurrentColumns : NULL;
@@ -3370,41 +3384,6 @@ bool ImGui::InputFloat4(const char* label, float v[4], const char* format, ImGui
     return InputScalarN(label, ImGuiDataType_Float, v, 4, NULL, NULL, format, flags);
 }
 
-// Prefer using "const char* format" directly, which is more flexible and consistent with other API.
-#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-bool ImGui::InputFloat(const char* label, float* v, float step, float step_fast, int decimal_precision, ImGuiInputTextFlags flags)
-{
-    char format[16] = "%f";
-    if (decimal_precision >= 0)
-        ImFormatString(format, IM_ARRAYSIZE(format), "%%.%df", decimal_precision);
-    return InputFloat(label, v, step, step_fast, format, flags);
-}
-
-bool ImGui::InputFloat2(const char* label, float v[2], int decimal_precision, ImGuiInputTextFlags flags)
-{
-    char format[16] = "%f";
-    if (decimal_precision >= 0)
-        ImFormatString(format, IM_ARRAYSIZE(format), "%%.%df", decimal_precision);
-    return InputScalarN(label, ImGuiDataType_Float, v, 2, NULL, NULL, format, flags);
-}
-
-bool ImGui::InputFloat3(const char* label, float v[3], int decimal_precision, ImGuiInputTextFlags flags)
-{
-    char format[16] = "%f";
-    if (decimal_precision >= 0)
-        ImFormatString(format, IM_ARRAYSIZE(format), "%%.%df", decimal_precision);
-    return InputScalarN(label, ImGuiDataType_Float, v, 3, NULL, NULL, format, flags);
-}
-
-bool ImGui::InputFloat4(const char* label, float v[4], int decimal_precision, ImGuiInputTextFlags flags)
-{
-    char format[16] = "%f";
-    if (decimal_precision >= 0)
-        ImFormatString(format, IM_ARRAYSIZE(format), "%%.%df", decimal_precision);
-    return InputScalarN(label, ImGuiDataType_Float, v, 4, NULL, NULL, format, flags);
-}
-#endif // IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-
 bool ImGui::InputInt(const char* label, int* v, int step, int step_fast, ImGuiInputTextFlags flags)
 {
     // Hexadecimal input provided as a convenience but the flag name is awkward. Typically you'd use InputText() to parse your own data, if you want to handle prefixes.
@@ -4046,7 +4025,7 @@ bool ImGui::InputTextEx(const char* label, const char* hint, char* buf, int buf_
         if (state->SelectedAllMouseLock && !io.MouseDown[0])
             state->SelectedAllMouseLock = false;
 
-        // It is ill-defined whether the back-end needs to send a \t character when pressing the TAB keys.
+        // It is ill-defined whether the backend needs to send a \t character when pressing the TAB keys.
         // Win32 and GLFW naturally do it but not SDL.
         const bool ignore_char_inputs = (io.KeyCtrl && !io.KeyAlt) || (is_osx && io.KeySuper);
         if ((flags & ImGuiInputTextFlags_AllowTabInput) && IsKeyPressedMap(ImGuiKey_Tab) && !ignore_char_inputs && !io.KeyShift && !is_readonly)
@@ -4303,10 +4282,11 @@ bool ImGui::InputTextEx(const char* label, const char* hint, char* buf, int buf_
                     IM_ASSERT(callback_data.Buf == state->TextA.Data);  // Invalid to modify those fields
                     IM_ASSERT(callback_data.BufSize == state->BufCapacityA);
                     IM_ASSERT(callback_data.Flags == flags);
-                    if (callback_data.CursorPos != utf8_cursor_pos)            { state->Stb.cursor = ImTextCountCharsFromUtf8(callback_data.Buf, callback_data.Buf + callback_data.CursorPos); state->CursorFollow = true; }
-                    if (callback_data.SelectionStart != utf8_selection_start)  { state->Stb.select_start = ImTextCountCharsFromUtf8(callback_data.Buf, callback_data.Buf + callback_data.SelectionStart); }
-                    if (callback_data.SelectionEnd != utf8_selection_end)      { state->Stb.select_end = ImTextCountCharsFromUtf8(callback_data.Buf, callback_data.Buf + callback_data.SelectionEnd); }
-                    if (callback_data.BufDirty)
+                    const bool buf_dirty = callback_data.BufDirty;
+                    if (callback_data.CursorPos != utf8_cursor_pos || buf_dirty)            { state->Stb.cursor = ImTextCountCharsFromUtf8(callback_data.Buf, callback_data.Buf + callback_data.CursorPos); state->CursorFollow = true; }
+                    if (callback_data.SelectionStart != utf8_selection_start || buf_dirty)  { state->Stb.select_start = (callback_data.SelectionStart == callback_data.CursorPos) ? state->Stb.cursor : ImTextCountCharsFromUtf8(callback_data.Buf, callback_data.Buf + callback_data.SelectionStart); }
+                    if (callback_data.SelectionEnd != utf8_selection_end || buf_dirty)      { state->Stb.select_end = (callback_data.SelectionEnd == callback_data.SelectionStart) ? state->Stb.select_start : ImTextCountCharsFromUtf8(callback_data.Buf, callback_data.Buf + callback_data.SelectionEnd); }
+                    if (buf_dirty)
                     {
                         IM_ASSERT(callback_data.BufTextLen == (int)strlen(callback_data.Buf)); // You need to maintain BufTextLen if you change the text!
                         if (callback_data.BufTextLen > backup_current_text_length && is_resizable)
@@ -4618,7 +4598,7 @@ bool ImGui::ColorEdit3(const char* label, float col[3], ImGuiColorEditFlags flag
 
 // Edit colors components (each component in 0.0f..1.0f range).
 // See enum ImGuiColorEditFlags_ for available options. e.g. Only access 3 floats if ImGuiColorEditFlags_NoAlpha flag is set.
-// With typical options: Left-click on colored square to open color picker. Right-click to open option menu. CTRL-Click over input fields to edit them and TAB to go to next item.
+// With typical options: Left-click on color square to open color picker. Right-click to open option menu. CTRL-Click over input fields to edit them and TAB to go to next item.
 bool ImGui::ColorEdit4(const char* label, float col[4], ImGuiColorEditFlags flags)
 {
     ImGuiWindow* window = GetCurrentWindow();
@@ -5254,7 +5234,7 @@ bool ImGui::ColorPicker4(const char* label, float col[4], ImGuiColorEditFlags fl
     return value_changed;
 }
 
-// A little colored square. Return true when clicked.
+// A little color square. Return true when clicked.
 // FIXME: May want to display/ignore the alpha component in the color display? Yet show it in the tooltip.
 // 'desc_id' is not called 'label' because we don't display it next to the button, but only in the tooltip.
 // Note that 'col' may be encoded in HSV if ImGuiColorEditFlags_InputHSV is set.
@@ -5479,7 +5459,7 @@ void ImGui::ColorPickerOptionsPopup(const float* ref_col, ImGuiColorEditFlags fl
     if (allow_opt_alpha_bar)
     {
         if (allow_opt_picker) Separator();
-        CheckboxFlags("Alpha Bar", (unsigned int*)&g.ColorEditOptions, ImGuiColorEditFlags_AlphaBar);
+        CheckboxFlags("Alpha Bar", &g.ColorEditOptions, ImGuiColorEditFlags_AlphaBar);
     }
     EndPopup();
 }
@@ -5954,10 +5934,6 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
     ImGuiContext& g = *GImGui;
     const ImGuiStyle& style = g.Style;
 
-    const bool span_all_columns = (flags & ImGuiSelectableFlags_SpanAllColumns) != 0;
-    if (span_all_columns && window->DC.CurrentColumns) // FIXME-OPT: Avoid if vertically clipped.
-        PushColumnsBackground();
-
     // Submit label or explicit size to ItemSize(), whereas ItemAdd() will submit a larger/spanning rectangle.
     ImGuiID id = window->GetID(label);
     ImVec2 label_size = CalcTextSize(label, NULL, true);
@@ -5968,6 +5944,7 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
 
     // Fill horizontal space
     // We don't support (size < 0.0f) in Selectable() because the ItemSpacing extension would make explicitely right-aligned sizes not visibly match other widgets.
+    const bool span_all_columns = (flags & ImGuiSelectableFlags_SpanAllColumns) != 0;
     const float min_x = span_all_columns ? window->ParentWorkRect.Min.x : pos.x;
     const float max_x = span_all_columns ? window->ParentWorkRect.Max.x : window->WorkRect.Max.x;
     if (size_arg.x == 0.0f || (flags & ImGuiSelectableFlags_SpanAvailWidth))
@@ -5992,6 +5969,15 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
     }
     //if (g.IO.KeyCtrl) { GetForegroundDrawList()->AddRect(bb.Min, bb.Max, IM_COL32(0, 255, 0, 255)); }
 
+    // Modify ClipRect for the ItemAdd(), faster than doing a PushColumnsBackground/PushTableBackground for every Selectable..
+    const float backup_clip_rect_min_x = window->ClipRect.Min.x;
+    const float backup_clip_rect_max_x = window->ClipRect.Max.x;
+    if (span_all_columns)
+    {
+        window->ClipRect.Min.x = window->ParentWorkRect.Min.x;
+        window->ClipRect.Max.x = window->ParentWorkRect.Max.x;
+    }
+
     bool item_add;
     if (flags & ImGuiSelectableFlags_Disabled)
     {
@@ -6004,12 +5990,20 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
     {
         item_add = ItemAdd(bb, id);
     }
-    if (!item_add)
+
+    if (span_all_columns)
     {
-        if (span_all_columns && window->DC.CurrentColumns)
-            PopColumnsBackground();
-        return false;
+        window->ClipRect.Min.x = backup_clip_rect_min_x;
+        window->ClipRect.Max.x = backup_clip_rect_max_x;
     }
+
+    if (!item_add)
+        return false;
+
+    // FIXME: We can standardize the behavior of those two, we could also keep the fast path of override ClipRect + full push on render only,
+    // which would be advantageous since most selectable are not selected.
+    if (span_all_columns && window->DC.CurrentColumns)
+        PushColumnsBackground();
 
     // We use NoHoldingActiveID on menus so user can click and _hold_ on a menu then drag to browse child entries
     ImGuiButtonFlags button_flags = 0;
@@ -6419,13 +6413,6 @@ void ImGui::Value(const char* prefix, float v, const char* float_format)
 //-------------------------------------------------------------------------
 
 // Helpers for internal use
-ImGuiMenuColumns::ImGuiMenuColumns()
-{
-    Spacing = Width = NextWidth = 0.0f;
-    memset(Pos, 0, sizeof(Pos));
-    memset(NextWidths, 0, sizeof(NextWidths));
-}
-
 void ImGuiMenuColumns::Update(int count, float spacing, bool clear)
 {
     IM_ASSERT(count == IM_ARRAYSIZE(Pos));
@@ -6525,7 +6512,7 @@ void ImGui::EndMenuBar()
     PopClipRect();
     PopID();
     window->DC.MenuBarOffset.x = window->DC.CursorPos.x - window->MenuBarRect().Min.x; // Save horizontal position so next append can reuse it. This is kinda equivalent to a per-layer CursorPos.
-    window->DC.GroupStack.back().EmitItem = false;
+    g.GroupStack.back().EmitItem = false;
     EndGroup(); // Restore position on layer 0
     window->DC.LayoutType = ImGuiLayoutType_Vertical;
     window->DC.NavLayerCurrent = ImGuiNavLayer_Main;
@@ -6605,7 +6592,7 @@ bool ImGui::BeginMenu(const char* label, bool enabled)
 
     // If a menu with same the ID was already submitted, we will append to it, matching the behavior of Begin().
     // We are relying on a O(N) search - so O(N log N) over the frame - which seems like the most efficient for the expected small amount of BeginMenu() calls per frame.
-    // If somehow this is ever becoming a problem we can switch to use e.g. a ImGuiStorager mapping key to last frame used.
+    // If somehow this is ever becoming a problem we can switch to use e.g. ImGuiStorage mapping key to last frame used.
     if (g.MenusIdSubmittedThisFrame.contains(id))
     {
         if (menu_is_open)
@@ -6859,7 +6846,7 @@ struct ImGuiTabBarSection
 namespace ImGui
 {
     static void             TabBarLayout(ImGuiTabBar* tab_bar);
-    static ImU32            TabBarCalcTabID(ImGuiTabBar* tab_bar, const char* label);
+    static ImU32            TabBarCalcTabID(ImGuiTabBar* tab_bar, const char* label, ImGuiWindow* docked_window);
     static float            TabBarCalcMaxTabWidth();
     static float            TabBarScrollClamp(ImGuiTabBar* tab_bar, float scrolling);
     static void             TabBarScrollToTab(ImGuiTabBar* tab_bar, ImGuiTabItem* tab, ImGuiTabBarSection* sections);
@@ -6869,18 +6856,8 @@ namespace ImGui
 
 ImGuiTabBar::ImGuiTabBar()
 {
-    ID = 0;
-    SelectedTabId = NextSelectedTabId = VisibleTabId = 0;
+    memset(this, 0, sizeof(*this));
     CurrFrameVisible = PrevFrameVisible = -1;
-    LastTabContentHeight = 0.0f;
-    WidthAllTabs = WidthAllTabsIdeal = 0.0f;
-    ScrollingAnim = ScrollingTarget = ScrollingTargetDistToVisibility = ScrollingSpeed = 0.0f;
-    ScrollingRectMinX = ScrollingRectMaxX = 0.0f;
-    Flags = ImGuiTabBarFlags_None;
-    ReorderRequestTabId = 0;
-    ReorderRequestDir = 0;
-    TabsActiveCount = 0;
-    WantLayout = VisibleTabWasSubmitted = TabsAddedNew = false;
     LastTabItemIdx = -1;
 }
 
@@ -6944,16 +6921,18 @@ bool    ImGui::BeginTabBarEx(ImGuiTabBar* tab_bar, const ImRect& tab_bar_bb, ImG
     g.CurrentTabBarStack.push_back(GetTabBarRefFromTabBar(tab_bar));
     g.CurrentTabBar = tab_bar;
 
+    // Append with multiple BeginTabBar()/EndTabBar() pairs.
+    tab_bar->BackupCursorPos = window->DC.CursorPos;
     if (tab_bar->CurrFrameVisible == g.FrameCount)
     {
-        //IMGUI_DEBUG_LOG("BeginTabBarEx already called this frame\n", g.FrameCount);
-        //IM_ASSERT(0);
+        window->DC.CursorPos = ImVec2(tab_bar->BarRect.Min.x, tab_bar->BarRect.Max.y + tab_bar->ItemSpacingY);
+        tab_bar->BeginCount++;
         return true;
     }
 
     // Ensure correct ordering when toggling ImGuiTabBarFlags_Reorderable flag, or when a new tab was added while being not reorderable
     if ((flags & ImGuiTabBarFlags_Reorderable) != (tab_bar->Flags & ImGuiTabBarFlags_Reorderable) || (tab_bar->TabsAddedNew && !(flags & ImGuiTabBarFlags_Reorderable)))
-        if (tab_bar->Tabs.Size > 1 && (flags & ImGuiTabBarFlags_DockNode) == 0)
+        if (tab_bar->Tabs.Size > 1 && (flags & ImGuiTabBarFlags_DockNode) == 0) // FIXME: TabBar with DockNode can now be hybrid
             ImQsort(tab_bar->Tabs.Data, tab_bar->Tabs.Size, sizeof(ImGuiTabItem), TabItemComparerByBeginOrder);
     tab_bar->TabsAddedNew = false;
 
@@ -6966,12 +6945,15 @@ bool    ImGui::BeginTabBarEx(ImGuiTabBar* tab_bar, const ImRect& tab_bar_bb, ImG
     tab_bar->WantLayout = true; // Layout will be done on the first call to ItemTab()
     tab_bar->PrevFrameVisible = tab_bar->CurrFrameVisible;
     tab_bar->CurrFrameVisible = g.FrameCount;
+    tab_bar->PrevTabsContentsHeight = tab_bar->CurrTabsContentsHeight;
+    tab_bar->CurrTabsContentsHeight = 0.0f;
+    tab_bar->ItemSpacingY = g.Style.ItemSpacing.y;
     tab_bar->FramePadding = g.Style.FramePadding;
     tab_bar->TabsActiveCount = 0;
+    tab_bar->BeginCount = 1;
 
     // Set cursor pos in a way which only be used in the off-chance the user erroneously submits item before BeginTabItem(): items will overlap
-    window->DC.CursorPos.x = tab_bar->BarRect.Min.x;
-    window->DC.CursorPos.y = tab_bar->BarRect.Max.y + g.Style.ItemSpacing.y;
+    window->DC.CursorPos = ImVec2(tab_bar->BarRect.Min.x, tab_bar->BarRect.Max.y + tab_bar->ItemSpacingY);
 
     // Draw separator
     const ImU32 col = GetColorU32((flags & ImGuiTabBarFlags_IsFocused) ? ImGuiCol_TabActive : ImGuiCol_TabUnfocusedActive);
@@ -7004,15 +6986,24 @@ void    ImGui::EndTabBar()
         IM_ASSERT_USER_ERROR(tab_bar != NULL, "Mismatched BeginTabBar()/EndTabBar()!");
         return;
     }
-    if (tab_bar->WantLayout) // Fallback in case no TabItem have been submitted
+
+    // Fallback in case no TabItem have been submitted
+    if (tab_bar->WantLayout)
         TabBarLayout(tab_bar);
 
     // Restore the last visible height if no tab is visible, this reduce vertical flicker/movement when a tabs gets removed without calling SetTabItemClosed().
     const bool tab_bar_appearing = (tab_bar->PrevFrameVisible + 1 < g.FrameCount);
     if (tab_bar->VisibleTabWasSubmitted || tab_bar->VisibleTabId == 0 || tab_bar_appearing)
-        tab_bar->LastTabContentHeight = ImMax(window->DC.CursorPos.y - tab_bar->BarRect.Max.y, 0.0f);
+    {
+        tab_bar->CurrTabsContentsHeight = ImMax(window->DC.CursorPos.y - tab_bar->BarRect.Max.y, tab_bar->CurrTabsContentsHeight);
+        window->DC.CursorPos.y = tab_bar->BarRect.Max.y + tab_bar->CurrTabsContentsHeight;
+    }
     else
-        window->DC.CursorPos.y = tab_bar->BarRect.Max.y + tab_bar->LastTabContentHeight;
+    {
+        window->DC.CursorPos.y = tab_bar->BarRect.Max.y + tab_bar->PrevTabsContentsHeight;
+    }
+    if (tab_bar->BeginCount > 1)
+        window->DC.CursorPos = tab_bar->BackupCursorPos;
 
     if ((tab_bar->Flags & ImGuiTabBarFlags_DockNode) == 0)
         PopID();
@@ -7048,7 +7039,7 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
             tab_bar->Tabs[tab_dst_n] = tab_bar->Tabs[tab_src_n];
 
         tab = &tab_bar->Tabs[tab_dst_n];
-        tab->IndexDuringLayout = (ImS8)tab_dst_n;
+        tab->IndexDuringLayout = (ImS16)tab_dst_n;
 
         // We will need sorting if tabs have changed section (e.g. moved from one of Leading/Central/Trailing to another)
         int curr_tab_section_n = (tab->Flags & ImGuiTabItemFlags_Leading) ? 0 : (tab->Flags & ImGuiTabItemFlags_Trailing) ? 2 : 1;
@@ -7124,7 +7115,7 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
         // Additionally, when using TabBarAddTab() to manipulate tab bar order we occasionally insert new tabs that don't have a width yet,
         // and we cannot wait for the next BeginTabItem() call. We cannot compute this width within TabBarAddTab() because font size depends on the active window.
         const char* tab_name = tab_bar->GetTabName(tab);
-        const bool has_close_button = tab->Window ? tab->Window->HasCloseButton : ((tab->Flags & ImGuiTabItemFlags_NoCloseButton) == 0);
+        const bool has_close_button = (tab->Flags & ImGuiTabItemFlags_NoCloseButton) == 0;
         tab->ContentWidth = TabItemCalcSize(tab_name, has_close_button).x;
 
         int section_n = (tab->Flags & ImGuiTabItemFlags_Leading) ? 0 : (tab->Flags & ImGuiTabItemFlags_Trailing) ? 2 : 1;
@@ -7202,12 +7193,16 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
         {
             ImGuiTabItem* tab = &tab_bar->Tabs[section_tab_index + tab_n];
             tab->Offset = tab_offset;
+            tab->NameOffset = -1;
             tab_offset += tab->Width + (tab_n < section->TabCount - 1 ? g.Style.ItemInnerSpacing.x : 0.0f);
         }
         tab_bar->WidthAllTabs += ImMax(section->Width + section->Spacing, 0.0f);
         tab_offset += section->Spacing;
         section_tab_index += section->TabCount;
     }
+
+    // Clear name buffers
+    tab_bar->TabsNames.Buf.resize(0);
 
     // If we have lost the selected tab, select the next most recently active one
     if (found_selected_tab_id == false)
@@ -7245,21 +7240,18 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
     tab_bar->ScrollingRectMinX = tab_bar->BarRect.Min.x + sections[0].Width + sections[0].Spacing;
     tab_bar->ScrollingRectMaxX = tab_bar->BarRect.Max.x - sections[2].Width - sections[1].Spacing;
 
-    // Clear name buffers
-    if ((tab_bar->Flags & ImGuiTabBarFlags_DockNode) == 0)
-        tab_bar->TabsNames.Buf.resize(0);
-
     // Actual layout in host window (we don't do it in BeginTabBar() so as not to waste an extra frame)
     ImGuiWindow* window = g.CurrentWindow;
     window->DC.CursorPos = tab_bar->BarRect.Min;
     ItemSize(ImVec2(tab_bar->WidthAllTabsIdeal, tab_bar->BarRect.GetHeight()), tab_bar->FramePadding.y);
 }
 
-// Dockables uses Name/ID in the global namespace. Non-dockable items use the ID stack.
-static ImU32   ImGui::TabBarCalcTabID(ImGuiTabBar* tab_bar, const char* label)
+// Dockable uses Name/ID in the global namespace. Non-dockable items use the ID stack.
+static ImU32   ImGui::TabBarCalcTabID(ImGuiTabBar* tab_bar, const char* label, ImGuiWindow* docked_window)
 {
-    if (tab_bar->Flags & ImGuiTabBarFlags_DockNode)
+    if (docked_window != NULL)
     {
+        IM_ASSERT(tab_bar->Flags & ImGuiTabBarFlags_DockNode);
         ImGuiID id = ImHashStr(label);
         KeepAliveID(id);
         return id;
@@ -7474,7 +7466,7 @@ static ImGuiTabItem* ImGui::TabBarScrollingButtons(ImGuiTabBar* tab_bar)
                 {
                     target_order += select_dir;
                     selected_order += select_dir;
-                    tab_to_scroll_to = (target_order <= 0 || target_order >= tab_bar->Tabs.Size) ? tab_to_scroll_to : NULL;
+                    tab_to_scroll_to = (target_order < 0 || target_order >= tab_bar->Tabs.Size) ? tab_to_scroll_to : NULL;
                 }
             }
         }
@@ -7548,7 +7540,7 @@ bool    ImGui::BeginTabItem(const char* label, bool* p_open, ImGuiTabItemFlags f
         IM_ASSERT_USER_ERROR(tab_bar, "Needs to be called between BeginTabBar() and EndTabBar()!");
         return false;
     }
-    IM_ASSERT(!(flags & ImGuiTabItemFlags_Button)); // BeginTabItem() Can't be used with button flags, use TabItemButton() instead!
+    IM_ASSERT((flags & ImGuiTabItemFlags_Button) == 0);             // BeginTabItem() Can't be used with button flags, use TabItemButton() instead!
 
     bool ret = TabItemEx(tab_bar, label, p_open, flags, NULL);
     if (ret && !(flags & ImGuiTabItemFlags_NoPushId))
@@ -7575,7 +7567,7 @@ void    ImGui::EndTabItem()
     IM_ASSERT(tab_bar->LastTabItemIdx >= 0);
     ImGuiTabItem* tab = &tab_bar->Tabs[tab_bar->LastTabItemIdx];
     if (!(tab->Flags & ImGuiTabItemFlags_NoPushId))
-        window->IDStack.pop_back();
+        PopID();
 }
 
 bool    ImGui::TabItemButton(const char* label, ImGuiTabItemFlags flags)
@@ -7606,7 +7598,7 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
         return false;
 
     const ImGuiStyle& style = g.Style;
-    const ImGuiID id = TabBarCalcTabID(tab_bar, label);
+    const ImGuiID id = TabBarCalcTabID(tab_bar, label, docked_window);
 
     // If the user called us with *p_open == false, we early out and don't render.
     // We make a call to ItemAdd() so that attempts to use a contextual popup menu with an implicit ID won't use an older ID.
@@ -7643,7 +7635,7 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
         tab_bar->TabsAddedNew = true;
         tab_is_new = true;
     }
-    tab_bar->LastTabItemIdx = (short)tab_bar->Tabs.index_from_ptr(tab);
+    tab_bar->LastTabItemIdx = (ImS16)tab_bar->Tabs.index_from_ptr(tab);
     tab->ContentWidth = size.x;
     tab->BeginOrder = tab_bar->TabsActiveCount++;
 
@@ -7656,9 +7648,10 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
     tab->Window = docked_window;
 
     // Append name with zero-terminator
-    if (tab_bar->Flags & ImGuiTabBarFlags_DockNode)
+    // (regular tabs are permitted in a DockNode tab bar, but window tabs not permitted in a non-DockNode tab bar)
+    if (tab->Window != NULL)
     {
-        IM_ASSERT(tab->Window != NULL);
+        IM_ASSERT(tab_bar->Flags & ImGuiTabBarFlags_DockNode);
         tab->NameOffset = -1;
     }
     else
@@ -7842,7 +7835,9 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
 
     // Render tab label, process close button
     const ImGuiID close_button_id = p_open ? GetIDWithSeed("#CLOSE", NULL, id) : 0;
-    bool just_closed = TabItemLabelAndCloseButton(display_draw_list, bb, flags, tab_bar->FramePadding, label, id, close_button_id, tab_contents_visible);
+    bool just_closed;
+    bool text_clipped;
+    TabItemLabelAndCloseButton(display_draw_list, bb, flags, tab_bar->FramePadding, label, id, close_button_id, tab_contents_visible, &just_closed, &text_clipped);
     if (just_closed && p_open != NULL)
     {
         *p_open = false;
@@ -7856,7 +7851,7 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
 
     // Tooltip (FIXME: Won't work over the close button because ItemOverlap systems messes up with HoveredIdTimer)
     // We test IsItemHovered() to discard e.g. when another item is active or drag and drop over the tab bar (which g.HoveredId ignores)
-    if (g.HoveredId == id && !held && g.HoveredIdNotActiveTimer > 0.50f && IsItemHovered())
+    if (text_clipped && g.HoveredId == id && !held && g.HoveredIdNotActiveTimer > 0.50f && IsItemHovered())
         if (!(tab_bar->Flags & ImGuiTabBarFlags_NoTooltip) && !(tab->Flags & ImGuiTabItemFlags_NoTooltip))
             SetTooltip("%.*s", (int)(FindRenderedTextEnd(label) - label), label);
 
@@ -7876,7 +7871,7 @@ void    ImGui::SetTabItemClosed(const char* label)
     if (is_within_manual_tab_bar)
     {
         ImGuiTabBar* tab_bar = g.CurrentTabBar;
-        ImGuiID tab_id = TabBarCalcTabID(tab_bar, label);
+        ImGuiID tab_id = TabBarCalcTabID(tab_bar, label, NULL);
         if (ImGuiTabItem* tab = TabBarFindTabByID(tab_bar, tab_id))
             tab->WantClose = true; // Will be processed by next call to TabBarLayout()
     }
@@ -7885,7 +7880,7 @@ void    ImGui::SetTabItemClosed(const char* label)
         if (window->DockIsActive)
             if (ImGuiDockNode* node = window->DockNode)
             {
-                ImGuiID tab_id = TabBarCalcTabID(node->TabBar, label);
+                ImGuiID tab_id = TabBarCalcTabID(node->TabBar, label, window);
                 TabBarRemoveTab(node->TabBar, tab_id);
                 window->DockTabWantClose = true;
             }
@@ -7931,12 +7926,18 @@ void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabI
 
 // Render text label (with custom clipping) + Unsaved Document marker + Close Button logic
 // We tend to lock style.FramePadding for a given tab-bar, hence the 'frame_padding' parameter.
-bool ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible)
+void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped)
 {
     ImGuiContext& g = *GImGui;
     ImVec2 label_size = CalcTextSize(label, NULL, true);
+
+    if (out_just_closed)
+        *out_just_closed = false;
+    if (out_text_clipped)
+        *out_text_clipped = false;
+
     if (bb.GetWidth() <= 1.0f)
-        return false;
+        return;
 
     // In Style V2 we'll have full override of all colors per state (e.g. focused, selected)
     // But right now if you want to alter text color of tabs this is what you need to do.
@@ -7956,6 +7957,13 @@ bool ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
         RenderTextClippedEx(draw_list, unsaved_marker_pos, bb.Max - frame_padding, TAB_UNSAVED_MARKER, NULL, NULL);
     }
     ImRect text_ellipsis_clip_bb = text_pixel_clip_bb;
+
+    // Return clipped state ignoring the close button
+    if (out_text_clipped)
+    {
+        *out_text_clipped = (text_ellipsis_clip_bb.Min.x + label_size.x) > text_pixel_clip_bb.Max.x;
+        //draw_list->AddCircle(text_ellipsis_clip_bb.Min, 3.0f, *out_text_clipped ? IM_COL32(255, 0, 0, 255) : IM_COL32(0, 255, 0, 255));
+    }
 
     // Close Button
     // We are relying on a subtle and confusing distinction between 'hovered' and 'g.HoveredId' which happens because we are using ImGuiButtonFlags_AllowOverlapMode + SetItemAllowOverlap()
@@ -7994,7 +8002,8 @@ bool ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
         g.Style.Alpha = backup_alpha;
 #endif
 
-    return close_button_pressed;
+    if (out_just_closed)
+        *out_just_closed = close_button_pressed;
 }
 
 
